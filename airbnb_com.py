@@ -177,7 +177,6 @@ class AirBnbComStrategy:
 
 def download(url):
 
-
     headers = {
         'authority': 'www.airbnb.com',
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -197,15 +196,4 @@ def download(url):
         return response.text
 
     return None
-
-
-# if __name__ == '__main__':
-
-
-#     url = 'https://www.airbnb.com/s/Miami--Florida--United-States/homes?tab_id=home_tab&refinement_paths%5B%5D=%2Fhomes&flexible_trip_lengths%5B%5D=one_week&monthly_start_date=2024-03-01&monthly_length=3&monthly_end_date=2024-06-01&price_filter_input_type=0&channel=EXPLORE&query=Miami%2C%20Florida%2C%20United%20States&place_id=ChIJEcHIDqKw2YgRZU-t3XHylv8&date_picker_type=calendar&checkin=2024-02-12&checkout=2024-02-13&source=structured_search_input_header&search_type=user_map_move&price_filter_num_nights=1&ne_lat=25.937624991861206&ne_lng=-79.96087820531693&sw_lat=25.537208029404738&sw_lng=-80.39972361725575&zoom=10.95386396617367&zoom_level=10.95386396617367&search_by_map=true'
-#     result = crawl_listing(url)
-
-#     print(result)
-#     curr_dt = datetime.now()
-#     timestamp = int(round(curr_dt.timestamp()))
 
