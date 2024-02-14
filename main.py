@@ -1,9 +1,10 @@
 import logging
 import os
+import csv
 import json
 from datetime import datetime
 
-from airbnb_com import AirBnbComStrategy
+from airbnb_com_crawler import AirBnbComStrategy
 
 output_path = 'output'
 target_file = 'target_links.txt'
@@ -43,10 +44,16 @@ def execute():
         
         timestamp = int(datetime.timestamp(datetime.now()))
 
-        with open(f'{output_path}/{timestamp}.json', 'w', encoding='UTF-8', ) as file:
+        with open(f'{output_path}/{timestamp}.json', 'w', encoding='UTF-8' ) as file:
             logger.info(f'Writing to file: {timestamp}.json')
             file.write(json.dumps(crawl_data, indent=4))
     
+        with open(f'{output_path}/{timestamp}.csv', 'w', encoding='UTF-8',newline='' ) as file:
+            logger.info(f'Writing to file: {timestamp}.csv')
+            headers = list(data[0].keys())
+            writer = csv.DictWriter(file, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(data)
 
 if __name__ == '__main__':
     logging.basicConfig(level = logging.INFO)
