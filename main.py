@@ -7,7 +7,7 @@ from datetime import datetime
 from airbnb_com_crawler import AirBnbComStrategy
 
 output_path = 'output'
-target_file = 'target_links.txt'
+target_file = 'target_profiles.json'
 
 logger = logging.getLogger()
 def execute():
@@ -17,16 +17,15 @@ def execute():
     if not target_file_exists:
         raise Exception(f'Unable to find target file, name {target_file}')
 
-    target_links = []
-    with open(target_file, 'r') as file:
-        logger.info('Reading targetfile')
-        txt = file.read()
-        txt = txt.replace('\n',' ').replace(',',' ')
-        target_links = txt.split()
+    targets = []
+    with open(target_file, 'r', encoding='utf-8') as file:
+        logger.info(f'[*] Reading targetfile {target_file}')
+        targets = json.loads(file.read().replace('\n',' '))
 
     strategy = AirBnbComStrategy(logger=logger)
     results = []
-    for url in target_links:
+    for profile in targets.get('profiles',[]):
+        url = profile.get('url')
         crawl_started = str(datetime.now())
         data = strategy.crawl_listing(url)
         crawl_finished = str(datetime.now())
@@ -45,11 +44,12 @@ def execute():
         timestamp = int(datetime.timestamp(datetime.now()))
 
         with open(f'{output_path}/{timestamp}.json', 'w', encoding='UTF-8' ) as file:
-            logger.info(f'Writing to file: {timestamp}.json')
+            logger.info(f'[*] Writing to file: {timestamp}.json')
             file.write(json.dumps(crawl_data, indent=4))
     
-        with open(f'{output_path}/{timestamp}.csv', 'w', encoding='UTF-8',newline='' ) as file:
-            logger.info(f'Writing to file: {timestamp}.csv')
+        file_title = '_'.join(profile.get('label','').lower().split()) + f'_{timestamp}'
+        with open(f'{output_path}/{file_title}.csv', 'w', encoding='UTF-8',newline='' ) as file:
+            logger.info(f'[*] Writing to file: {file_title}.csv')
             headers = list(data[0].keys())
             writer = csv.DictWriter(file, fieldnames=headers)
             writer.writeheader()

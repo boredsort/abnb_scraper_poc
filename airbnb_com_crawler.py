@@ -2,7 +2,7 @@
 import json
 import re
 from datetime import datetime
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlparse, parse_qs
 
 from curl_cffi import requests as c_request
 from bs4 import BeautifulSoup
@@ -15,8 +15,10 @@ class AirBnbComStrategy:
 
     def __init__(self, logger=None):
         self.logger=logger
+        self.origin_url = None
 
     def crawl_listing(self, url):
+        self.origin_url = url
         self.logger.info(f'Connecting to: {url}')
         raw_data = download(url)
         self.logger.info(f'Parsing Data')
@@ -32,6 +34,9 @@ class AirBnbComStrategy:
         deffered_state_json = self.get_deffered_state(soup)
         listing_items_json = self.get_listing_items(deffered_state_json)
         try:
+            dates = self.get_check_dates()
+            check_in = dates.get('checkin')
+            check_out = dates.get('checkout')
             rank = 1
             for item in listing_items_json:
                 url = self.get_url(item)
@@ -50,14 +55,19 @@ class AirBnbComStrategy:
                 accuracy = self.get_pdp_clean(room_data)
                 communication = self.get_pdp_communication(room_data)
                 location_rate = self.get_pdp_location_rating(room_data)
-                check_in = self.get_pdp_check_in(room_data)
+                check_in_rate = self.get_pdp_check_in(room_data)
                 guest_capacity = self.get_pdp_capacity(room_data)
                 lat = self.get_pdp_lat(room_data)
                 lon = self.get_pdp_lon(room_data)
-                baths = self.get_pdp_baths(room_data)
+                rooms = self.get_pdp_rooms(room_data)
+                amenties = self.get_pdp_amenties(room_data)
+                property_type = self.get_property_type(room_data)
                 # guests = self.get_pdp_guests(room_data)
                 data = {
                     "rank": rank,
+                    "property_type": property_type,
+                    "check_in": check_in,
+                    "end_date": check_out,
                     "title": title,
                     "url": url,
                     "description": description,
@@ -73,11 +83,16 @@ class AirBnbComStrategy:
                     "accuracy": accuracy,
                     "location_rate": location_rate,
                     "communication": communication,
-                    "check_in": check_in,
+                    "check_in_rating": check_in_rate,
                     "guest": guest_capacity,
                     'lattitude': lat,
-                    'longtitude': lon
-                    # "baths": baths
+                    'longtitude': lon,
+                    "baths": rooms.get('bath'),
+                    'beds': rooms.get('beds'),
+                    'bedrooms': rooms.get('bedroom'),
+                    'kitchen': amenties.get('kitchen'),
+                    'pool': amenties.get('pool'),
+                    'amenities': amenties.get('extra',[])
                 }
                 rank += 1
                 results.append(data)
@@ -236,7 +251,7 @@ class AirBnbComStrategy:
     def fetch_room_data(self, url):
 
         try:
-            print(f'[*] Fetching PDP data {url}')
+            self.logger.info(f'[*] Fetching PDP data {url}')
             raw = download(url)
             if raw:
                 soup = BeautifulSoup(raw, 'lxml')
@@ -253,8 +268,8 @@ class AirBnbComStrategy:
                             if room_data:
                                 return room_data
 
-        except:
-            pass
+        except Exception as e:
+            self.logger.info(f'[*] Failed to fetch {str(e)}')
         return {}
     
     def fetch_pdp_operation_id(self, url):
@@ -433,8 +448,12 @@ class AirBnbComStrategy:
             pass
         return value
     
-    def get_pdp_baths(self, room_data):
-        value = int()
+    def get_pdp_rooms(self, room_data):
+        value = {
+            'bedroom': 0,
+            'bath': 0,
+            'beds': 0
+        }
         try:
             sbui_data = room_data.get('sections', {}).get('sbuiData')
             if sbui_data:
@@ -442,12 +461,81 @@ class AirBnbComStrategy:
                 for section in sections:
                     if section.get('sectionId') == 'OVERVIEW_DEFAULT_V2':
                         sec_data = section.get('sectionData')
+                        overview_items = sec_data.get('overviewItems', [])
+                        if overview_items:
+                            keys = list(value)
+                            for key in keys:
+                                room = [room.get('title') for room in overview_items if key in room.get('title')]
+                                if room:
+                                    room_txt = room[0]
+                                    matches = re.search(r'([0-9+]+)', room_txt)
+                                    if matches:
+                                        value.update({key: matches.group(1)})
         except:
             pass
         return value
-    # def get_pdp_guests(room_data):
-    #     pass
+    
+    def get_property_type(self, room_data):
+        value = str()
+        try:
+            meta_data = room_data.get('sections', {}).get('metadata')
+            if meta_data:
+                property_type = meta_data.get('sharingConfig', {}).get('propertyType')
+                if property_type:
+                    value = property_type
+        except:
+            pass
+        return value
 
+    
+    def get_pdp_amenties(self, room_data):
+        value = {
+            'kitchen': False,
+            'pool': False,
+            'extra': []
+        }
+        try:
+            extras = []
+            sections = room_data.get('sections', {}).get('sections',[])
+            if sections:
+                for section in sections:
+                    if section.get('sectionId') == 'AMENITIES_DEFAULT':
+                        all_amenities_group = section.get('section', {}).get('seeAllAmenitiesGroups')
+                        if all_amenities_group:
+                            for group in all_amenities_group:
+                                amenties = group.get('amenities', [])
+                                for item in amenties:
+                                    if 'kitchen' in item.get('title').lower():
+                                        available = item.get('available', False)
+                                        value.update({'kitchen': available})
+                                    elif 'pool' in item.get('title').lower():
+                                        available = item.get('available', False)
+                                        value.update({'pool': available})
+                                    else:
+                                        title = item.get('title')
+                                        if item.get('available', False):
+                                            extras.append(title)
+                                            
+            if extras:
+                value.update({'extra': extras})
+        except:
+            pass
+        return value
+
+    def get_check_dates(self):
+        value = {}
+        try:
+            parsed = urlparse(self.origin_url)
+            parsed_query = parse_qs(parsed.query)
+            check_in = parsed_query.get('checkin')
+            if check_in:
+                value.update({'checkin': check_in[0]})
+            check_out = parsed_query.get('checkout')
+            if check_out:
+                 value.update({'checkout': check_out[0]})
+        except:
+            pass
+        return value
 
 
 def download(url, headers={}):
