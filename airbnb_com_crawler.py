@@ -62,18 +62,22 @@ class AirBnbComStrategy:
                 rooms = self.get_pdp_rooms(room_data)
                 amenties = self.get_pdp_amenties(room_data)
                 property_type = self.get_property_type(room_data)
+                fees = self.get_pdp_fees(room_data)
                 # guests = self.get_pdp_guests(room_data)
                 data = {
+                    "check_in_date": check_in,
+                    "check_out_date": check_out,
                     "rank": rank,
                     "property_type": property_type,
-                    "check_in": check_in,
-                    "end_date": check_out,
-                    "title": title,
+                    "label": title,
                     "url": url,
                     "description": description,
+                    "currency": "USD",
                     "price_per_night": price_per_night,
-                    "original_price_per_night": orig_price_per_night,
+                    "orig_per_night": orig_price_per_night,
                     "total_price": total_price,
+                    "cleaning_fee": fees.get('cleaning_fee'),
+                    "service_fee": fees.get('service_fee'),
                     "rating_score": rating_score,
                     "rating_count": rating_count,
                     "labels": labels,
@@ -85,13 +89,13 @@ class AirBnbComStrategy:
                     "communication": communication,
                     "check_in_rating": check_in_rate,
                     "guest": guest_capacity,
-                    'lattitude': lat,
-                    'longtitude': lon,
                     "baths": rooms.get('bath'),
                     'beds': rooms.get('beds'),
                     'bedrooms': rooms.get('bedroom'),
                     'kitchen': amenties.get('kitchen'),
                     'pool': amenties.get('pool'),
+                    'lattitude': lat,
+                    'longtitude': lon,
                     'amenities': amenties.get('extra',[])
                 }
                 rank += 1
@@ -103,9 +107,26 @@ class AirBnbComStrategy:
     def get_url(self, item_json):
         value = str()
         try:
+            quary_params = {}
+            parsed = urlparse(self.origin_url)
+            parsed_query = parse_qs(parsed.query)
+            adults = parsed_query.get('adults')
+            if adults:
+                quary_params.update({'adults': adults[0]})
+            check_in = parsed_query.get('checkin')
+            if check_in:
+                quary_params.update({'check_in': check_in[0]})
+            check_out = parsed_query.get('checkout')
+            if check_out:
+                quary_params.update({'check_out': check_out[0]})
+            
+
+
             base_url = 'https://www.airbnb.com/rooms/'
             id = item_json.get('listing', {}).get('id')
-            if id:
+            if id and quary_params:
+                value = f'{base_url}{id.strip()}?{urlencode(quary_params, quote_via=quote)}'
+            else:
                 value = f'{base_url}{id.strip()}'
         except:
             pass
@@ -301,13 +322,28 @@ class AirBnbComStrategy:
                 client_data = spa_data[1][1]
                 niobe_data = client_data.get('niobeMinimalClientData',[None])[0][0]
 
-                variables = niobe_data.replace('StaysPdpSections:','')
+                variables_txt = niobe_data.replace('StaysPdpSections:','')
+                variables_json = json.loads(variables_txt)
+                section_ids = [
+                    "CANCELLATION_POLICY_PICKER_MODAL",
+                    "BOOK_IT_CALENDAR_SHEET",
+                    "POLICIES_DEFAULT",
+                    "BOOK_IT_SIDEBAR",
+                    "URGENCY_COMMITMENT_SIDEBAR",
+                    "BOOK_IT_NAV",
+                    "BOOK_IT_FLOATING_FOOTER",
+                    "EDUCATION_FOOTER_BANNER",
+                    "URGENCY_COMMITMENT",
+                    "EDUCATION_FOOTER_BANNER_MODAL"
+                ]
+                variables_json['pdpSectionsRequest'].update({'sectionIds': section_ids})
+                
                 extensions = json.dumps({"persistedQuery":{"version":1,"sha256Hash":operation_id}},separators=(',',':'))
                 query_params = {
                     "operationName": "StaysPdpSections",
                     "locale": "en",
-                    "currency": "CAD",
-                    "variables": variables,
+                    "currency": "USD",
+                    "variables": json.dumps(variables_json,separators=(',',':')),
                     "extensions": extensions
                 }
                 return f'https://www.airbnb.com/api/v3/StaysPdpSections/{operation_id}?{urlencode(query_params, quote_via=quote)}'
@@ -474,6 +510,33 @@ class AirBnbComStrategy:
         except:
             pass
         return value
+    
+    def get_pdp_fees(self, room_data):
+        value = {
+            'cleaning_fee':0,
+            'service_fee':0
+        }
+        try:
+            sections = room_data.get('sections', {}).get('sections')
+            if sections:
+                for section in sections:
+                    if section.get('sectionComponentType') == 'BOOK_IT_CALENDAR_SHEET':
+                        sec_data = section.get('section')
+                        price_items = sec_data.get('structuredDisplayPrice', {}).get('explanationData', {}).get('priceDetails', [None])[0].get('items')
+                        fees = list(value)
+                        if price_items:
+                            for key in fees:
+                                fee = ' '.join(key.split('_'))
+                                item = [item.get('priceString') for item in price_items if fee in item.get('description').lower()]
+                                if item:
+                                    fee_val = float(re.sub('[^0-9.]', '', item[0]))
+                                    if fee_val:
+                                        value.update({key: fee_val})
+
+        except:
+            pass
+        return value
+
     
     def get_property_type(self, room_data):
         value = str()
