@@ -35,6 +35,8 @@ def execute():
             "crawl_finish": crawl_finished,
             "result": data,
         }
+        items_data = [item for items in data for item in items]
+
         results.append(crawl_data)
 
         output_dir_exists = os.path.exists(output_path)
@@ -50,10 +52,10 @@ def execute():
         file_title = '_'.join(profile.get('label','').lower().split()) + f'_{timestamp}'
         with open(f'{output_path}/{file_title}.csv', 'w', encoding='UTF-8',newline='' ) as file:
             logger.info(f'[*] Writing to file: {file_title}.csv')
-            headers = list(data[0].keys())
+            headers = list(items_data[0].keys())
             writer = csv.DictWriter(file, fieldnames=headers)
             writer.writeheader()
-            writer.writerows(data)
+            writer.writerows(items_data)
 
 if __name__ == '__main__':
     logging.basicConfig(level = logging.INFO)
