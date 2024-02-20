@@ -4,11 +4,12 @@ import re
 from datetime import datetime
 from urllib.parse import urlencode, quote, urlparse, parse_qs
 
-from curl_cffi import requests as c_request
+# from curl_cffi import requests as c_request
+from utils.http_curl import HTTP
 from bs4 import BeautifulSoup
 
 
-curl_request = c_request
+# curl_request = c_request
 
 class AirBnbComStrategy:
 
@@ -16,30 +17,93 @@ class AirBnbComStrategy:
     def __init__(self, logger=None):
         self.logger=logger
         self.origin_url = None
-
+        self.pdp_operation_id = None
     def crawl_listing(self, url):
         self.origin_url = url
-        self.logger.info(f'Connecting to: {url}')
-        raw_data = download(url)
-        self.logger.info(f'Parsing Data')
-        result = self.parse(raw_data)
-
-        return result
-    
-    def parse(self, raw_data):
+        next_page_url = url
         results = []
+        initial_raw = None
+        payload = None
+        api_headers = None
+        search_operation_id = None
+        page = 1
+        start_rank = 1
+        try:
+            while(next_page_url):
+                self.logger.info(f'Connecting to: {next_page_url}')
+                raw_data = download(next_page_url, headers=api_headers, data=payload)
+                if not raw_data:
+                    self.logger.info(f"No raw data found")
+                    break
+                
+                if initial_raw is None:
+                    initial_raw = raw_data
+
+                self.logger.info(f'Parsing Data')
+                result = self.parse(raw_data, start_rank)
+                if not result:
+                    break
+                results.append(result)
+    
+                if search_operation_id is None:
+                    search_operation_id = self.fetch_search_operation_id(raw_data)
+
+                payload = self.generate_search_api_payload(initial_raw, page, search_operation_id)
+                if not payload:
+                    break
+
+                if api_headers is None:
+                    soup = BeautifulSoup(raw_data, 'lxml')
+                    api_headers = self.generate_pdp_api_headers(soup, url)
+                next_page_url = self.generate_search_api_url(search_operation_id)
+                page += 1
+                start_rank = len(result) + start_rank
+        except:
+            pass
+        return results
+    
+    def get_next_page(self, raw_data, url):
+        next_url = None
         soup = BeautifulSoup(raw_data, 'lxml')
-
-
         deffered_state_json = self.get_deffered_state(soup)
-        listing_items_json = self.get_listing_items(deffered_state_json)
+        pagination_json =  self.get_pagination_json(deffered_state_json)
+        if pagination_json:
+            next_page_cursor = pagination_json.get('page_info', {}).get('nextPageCursor')
+            session_id = pagination_json.get('session_id')
+            if next_page_cursor and session_id:
+                next_url = f'{url}&federated_search_session_id={session_id}&pagination_search=true&cursor={quote(next_page_cursor)}'
+        return next_url
+    
+    # def parse(self, raw_data):
+    #     results = []
+    #     if isinstance(raw_data, str) and '<!doctype html' in raw_data:
+    #         results = self._parse_html(raw_data)
+    #     else:
+    #         results = self._parse_json(raw_data)
+    #     return results
+    
+    # def _parse_json(self, raw_data):
+    #     return {}
+    
+    def parse(self, raw_data, start_rank):
+        results = []
+        listing_items_json = []
+        if '<!doctype html' in raw_data:
+            soup = BeautifulSoup(raw_data, 'lxml')
+            deffered_state_json = self.get_deffered_state(soup)
+            listing_items_json = self.get_listing_items(deffered_state_json)
+        else:
+            state_json = json.loads(raw_data)
+            listing_items_json = self.get_listing_items(state_json)
+
         try:
             dates = self.get_check_dates()
             check_in = dates.get('checkin')
             check_out = dates.get('checkout')
-            rank = 1
+            rank = start_rank
             for item in listing_items_json:
                 url = self.get_url(item)
+                initial_room_data = self.fetch_room_data(url, initial=True)
                 room_data = self.fetch_room_data(url)
                 title = self.get_title(item)
                 description = self.get_description(item)
@@ -57,10 +121,10 @@ class AirBnbComStrategy:
                 location_rate = self.get_pdp_location_rating(room_data)
                 check_in_rate = self.get_pdp_check_in(room_data)
                 guest_capacity = self.get_pdp_capacity(room_data)
-                lat = self.get_pdp_lat(room_data)
-                lon = self.get_pdp_lon(room_data)
+                lat = self.get_pdp_lat(initial_room_data)
+                lon = self.get_pdp_lon(initial_room_data)
                 rooms = self.get_pdp_rooms(room_data)
-                amenties = self.get_pdp_amenties(room_data)
+                amenties = self.get_pdp_amenties(initial_room_data)
                 property_type = self.get_property_type(room_data)
                 fees = self.get_pdp_fees(room_data)
                 # guests = self.get_pdp_guests(room_data)
@@ -119,19 +183,83 @@ class AirBnbComStrategy:
             check_out = parsed_query.get('checkout')
             if check_out:
                 quary_params.update({'check_out': check_out[0]})
-            
-
 
             base_url = 'https://www.airbnb.com/rooms/'
-            id = item_json.get('listing', {}).get('id')
+            id = item_json.get('listing', {}).get('id') \
+                or item_json.get('listingId')
             if id and quary_params:
                 value = f'{base_url}{id.strip()}?{urlencode(quary_params, quote_via=quote)}'
-            else:
+            elif id:
                 value = f'{base_url}{id.strip()}'
         except:
             pass
         return value
 
+    def get_pagination_json(self, deffered_state_json):
+        client_data = deffered_state_json.get('niobeMinimalClientData')
+        try:
+            pagination = {}
+            if client_data:
+                search_result = client_data[0][1]
+                if search_result:
+                    stay_search = search_result.get('data', {}).get('presentation', {}).get('staysSearch')
+                    if stay_search:
+                        pagination_info = stay_search.get('results', {}).get('paginationInfo')
+                        if pagination_info:
+                            pagination.update({"page_info": pagination_info})
+                        session_id = stay_search.get('results', {}).get('loggingMetadata', {}).get('legacyLoggingContext', {}).get('federatedSearchSessionId')
+                        if session_id:
+                            pagination.update({"session_id":session_id })
+
+            if pagination:
+                return pagination
+
+        except:
+            pass
+
+        return {}
+    
+    def generate_search_api_payload(self, raw_data, page, operation_id):
+        soup = BeautifulSoup(raw_data, 'lxml')
+        
+        try:
+            deffered_state_json = self.get_deffered_state(soup)
+            listing_items_json = self.get_listing_items(deffered_state_json)
+            item_ids = [item.get('listing', {}).get('id') for item in listing_items_json]
+            pagination_json =  self.get_pagination_json(deffered_state_json)
+
+            client_data = deffered_state_json.get('niobeMinimalClientData')
+            search_result = client_data[0][1]
+            # the next page cursor is the page number since the cursor index starts at 0
+            # but the page start at 1
+            cursor = pagination_json.get('page_info', {}).get('pageCursors')[page]
+            variables = search_result.get('variables', {})
+
+            variables['staysSearchRequest'].update({
+                "cursor": cursor,
+                "skipHydrationListingIds": item_ids
+                })
+            
+            variables['staysMapSearchRequestV2'].update({
+                "cursor": cursor,
+                "skipHydrationListingIds": item_ids
+                })
+            
+            payload = {
+                "operationName": "StaysSearch",
+                "variables": variables,
+                "extensions": {
+                    "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": operation_id
+                    }
+                }
+            }
+            return json.dumps(payload, separators=(',',':'))
+        except:
+            pass
+
+        return None
     def get_title(self, item_json):
         value = str()
         try:
@@ -250,8 +378,8 @@ class AirBnbComStrategy:
             pass
         return {}
 
-    def get_listing_items(self, deffered_state_json):
-        client_data = deffered_state_json.get('niobeMinimalClientData')
+    def get_listing_items(self, state_json):
+        client_data = state_json.get('niobeMinimalClientData')
         try:
             if client_data:
                 search_result = client_data[0][1]
@@ -259,28 +387,51 @@ class AirBnbComStrategy:
                     presentation = search_result.get('data', {}).get('presentation', {})
                     if presentation:
                         return presentation.get('staysSearch', {}).get('results', {}).get('searchResults', [])
+            else:
+                presentation = state_json.get('data', {}).get('presentation', {})
+                if presentation:
+                    return presentation.get('staysSearch', {}).get('results', {}).get('searchResults', []) 
         except:
             pass
         return []
     
     def get_pdp_js_link(self, soup):
+        ''' This script url will contain the hash of the operation_id for the PDP api route
+        '''
         tag = soup.find('script', src=re.compile('web/common/frontend/gp-stays-pdp-route/routes/PdpPlatformRoute.prepare', re.IGNORECASE))
         if tag:
             return tag.get('src')
         return None
+    
+    def get_search_js_link(self, soup):
+        ''' This script url will contain the hash of the operation_id for the search api route
+        '''
+        tag = soup.find('script', src=re.compile('web/common/frontend/stays-search/routes/StaysSearchRoute/StaysSearchRoute.prepare', re.IGNORECASE))
+        if tag:
+            return tag.get('src')
+        return None
 
-    def fetch_room_data(self, url):
+    def fetch_room_data(self, url, initial=False):
 
         try:
-            self.logger.info(f'[*] Fetching PDP data {url}')
+            if initial:
+                self.logger.info(f'[*] Fetching initial PDP data {url}')
+            else:
+                self.logger.info(f'[*] Fetching hidden PDP data {url}')
             raw = download(url)
             if raw:
                 soup = BeautifulSoup(raw, 'lxml')
                 pdp_link = self.get_pdp_js_link(soup)
                 if pdp_link:
-                    operation_id = self.fetch_pdp_operation_id(pdp_link)
+
+                    operation_id = None
+                    if self.pdp_operation_id is None:
+                        operation_id = self.fetch_pdp_operation_id(pdp_link)
+                    else:
+                        operation_id = self.pdp_operation_id
+
                     if operation_id:
-                        pdp_api_url = self.generate_pdp_api_url(soup, operation_id)
+                        pdp_api_url = self.generate_pdp_api_url(soup, operation_id, initial=initial)
                         pdp_api_header = self.generate_pdp_api_headers(soup, url)
                         pdp_raw = download(pdp_api_url, headers=pdp_api_header)
                         if pdp_raw:
@@ -304,6 +455,19 @@ class AirBnbComStrategy:
             pass
         return None
     
+    def fetch_search_operation_id(self, raw_data):
+        try:
+            soup = BeautifulSoup(raw_data, 'lxml')
+            js_url = self.get_search_js_link(soup)
+            raw = download(js_url)
+            if raw:
+                matches = re.search(r"'StaysSearch',type:'query',operationId:'([0-9a-zA-Z]+)'", raw)
+                if matches:
+                    return matches.group(1)
+        except:
+            pass
+        return None
+    
     def get_injector_instance_json(self, soup):
         try:
             tag = soup.select_one('#data-injector-instances')
@@ -313,8 +477,11 @@ class AirBnbComStrategy:
         except:
             pass
         return {}
-
-    def generate_pdp_api_url(self, soup, operation_id):
+    
+    def generate_search_api_url(self, operation_id):
+        return f'https://www.airbnb.com/api/v3/StaysSearch/{operation_id}?operationName=StaysSearch&locale=en&currency=USD'
+    
+    def generate_pdp_api_url(self, soup, operation_id, initial=False):
         injector_json = self.get_injector_instance_json(soup)
         spa_data = injector_json.get('root > core-guest-spa', {})
         try:
@@ -324,19 +491,21 @@ class AirBnbComStrategy:
 
                 variables_txt = niobe_data.replace('StaysPdpSections:','')
                 variables_json = json.loads(variables_txt)
-                section_ids = [
-                    "CANCELLATION_POLICY_PICKER_MODAL",
-                    "BOOK_IT_CALENDAR_SHEET",
-                    "POLICIES_DEFAULT",
-                    "BOOK_IT_SIDEBAR",
-                    "URGENCY_COMMITMENT_SIDEBAR",
-                    "BOOK_IT_NAV",
-                    "BOOK_IT_FLOATING_FOOTER",
-                    "EDUCATION_FOOTER_BANNER",
-                    "URGENCY_COMMITMENT",
-                    "EDUCATION_FOOTER_BANNER_MODAL"
-                ]
-                variables_json['pdpSectionsRequest'].update({'sectionIds': section_ids})
+
+                if not initial:
+                    section_ids = [
+                        "CANCELLATION_POLICY_PICKER_MODAL",
+                        "BOOK_IT_CALENDAR_SHEET",
+                        "POLICIES_DEFAULT",
+                        "BOOK_IT_SIDEBAR",
+                        "URGENCY_COMMITMENT_SIDEBAR",
+                        "BOOK_IT_NAV",
+                        "BOOK_IT_FLOATING_FOOTER",
+                        "EDUCATION_FOOTER_BANNER",
+                        "URGENCY_COMMITMENT",
+                        "EDUCATION_FOOTER_BANNER_MODAL"
+                    ]
+                    variables_json['pdpSectionsRequest'].update({'sectionIds': section_ids})
                 
                 extensions = json.dumps({"persistedQuery":{"version":1,"sha256Hash":operation_id}},separators=(',',':'))
                 query_params = {
@@ -601,7 +770,7 @@ class AirBnbComStrategy:
         return value
 
 
-def download(url, headers={}):
+def download(url, headers={}, data=None):
 
     if not headers:
         headers = {
@@ -617,10 +786,21 @@ def download(url, headers={}):
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'viewport-width': '1920',
         }
+    http_curl = HTTP()
+    if not data:
     
-    response = curl_request.get(url, headers=headers, impersonate='chrome110')
-    if response and response.status_code in [200, 201]:
-        return response.text
-
+        # response = curl_request.get(url, headers=headers, impersonate='chrome110')
+        response = http_curl.get(url, headers=headers )
+        if response and response.status_code in [200, 201]:
+            return response.text
+        else:
+            print(response.status_code)
+    else:
+        # response = curl_request.post(url, headers=headers, impersonate='chrome110', data=data)
+        response = http_curl.post(url, headers=headers, data=data )
+        if response and response.status_code in [200, 201]:
+            return response.text
+        else:
+            print(response.status_code)
     return None
 
